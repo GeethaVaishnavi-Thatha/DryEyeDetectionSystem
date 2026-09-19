@@ -827,6 +827,21 @@ export default function App() {
                           </div>
                         )}
 
+                        {isMonitoring && modelState === 'ready' && faceDetected
+                          && !tracking.baselineEar && !tracking.isCalibrating && (
+                          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-3 px-4 py-2 rounded-full bg-slate-950/90 border border-cyan-500/40 backdrop-blur-sm">
+                            <p className="text-xs text-slate-300">
+                              Blink threshold is using the default 0.21
+                            </p>
+                            <button
+                              onClick={tracking.startCalibration}
+                              className="px-3 py-1 rounded-full bg-cyan-500 text-slate-950 text-xs font-bold hover:bg-cyan-400 transition-colors"
+                            >
+                              Calibrate to my eyes
+                            </button>
+                          </div>
+                        )}
+
                         {tracking.isCalibrating && (
                           <div className="absolute bottom-4 left-1/2 -translate-x-1/2 px-4 py-2 rounded-full bg-cyan-500/20 border border-cyan-400/50 backdrop-blur-sm">
                             <p className="text-xs font-semibold text-cyan-200">
@@ -887,13 +902,28 @@ export default function App() {
                       <button 
                         onClick={tracking.startCalibration}
                         disabled={!isMonitoring || !faceDetected || tracking.isCalibrating}
-                        title="Measure your own resting eye openness for a more accurate blink threshold"
-                        className="mt-0.5 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-cyan-300 border border-slate-700 w-full disabled:opacity-50"
+                        title={
+                          !isMonitoring
+                            ? "Start the scanner first"
+                            : !faceDetected
+                              ? "Your face needs to be visible before calibrating"
+                              : "Measure your own resting eye openness for a more accurate blink threshold"
+                        }
+                        className="mt-0.5 px-2 py-1 rounded bg-cyan-500/15 hover:bg-cyan-500/25 text-[11px] font-semibold text-cyan-300 border border-cyan-500/40 w-full disabled:opacity-40 disabled:bg-slate-800 disabled:border-slate-700 disabled:text-slate-500"
                       >
                         {tracking.isCalibrating
                           ? `Calibrating ${Math.round(tracking.calibrationProgress * 100)}%`
                           : tracking.baselineEar ? 'Recalibrate' : 'Calibrate'}
                       </button>
+                      <span className="block text-[9px] text-slate-500 mt-1 leading-tight">
+                        {!isMonitoring
+                          ? 'Start the scanner first'
+                          : !faceDetected
+                            ? 'Waiting for your face'
+                            : tracking.baselineEar
+                              ? 'Tuned to your eyes'
+                              : 'Tune to your eyes'}
+                      </span>
                     </div>
                   </div>
                 </div>
