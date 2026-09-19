@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
+import { useEyeTracking, CALIBRATION_SECONDS } from './hooks/useEyeTracking';
+import { assessDryEyeRisk, calculateHealthScore } from './lib/ear';
 import { 
   Eye, 
   Activity, 
@@ -49,26 +51,15 @@ export default function App() {
 
   // AI & Monitoring State
   const [isMonitoring, setIsMonitoring] = useState<boolean>(false);
-  const [backendMode, setBackendMode] = useState<'simulated' | 'python'>('simulated');
-  const [blinkCount, setBlinkCount] = useState<number>(0);
-  const [earValue, setEarValue] = useState<number>(0.32);
-  const [eyeStatus, setEyeStatus] = useState<'Open' | 'Closed' | 'Dry Eye Risk'>('Open');
-  const [blinkRate, setBlinkRate] = useState<number>(16); // Blinks per minute
+  const [backendMode, setBackendMode] = useState<'browser' | 'python'>('browser');
   const [screenTimeSeconds, setScreenTimeSeconds] = useState<number>(0);
   const [fatigueSeconds, setFatigueSeconds] = useState<number>(0);
-  const [riskLevel, setRiskLevel] = useState<'Low Risk' | 'Moderate Risk' | 'High Risk'>('Low Risk');
-  const [aiHealthScore, setAiHealthScore] = useState<number>(94);
 
   // Alerts & Voice State
   const [voiceAlerts, setVoiceAlerts] = useState<boolean>(true);
   const [activeAlert, setActiveAlert] = useState<string | null>(null);
   const [alertHistory, setAlertHistory] = useState<string[]>([]);
-  const [sessionLogs, setSessionLogs] = useState<SessionHistory[]>([
-    { timestamp: '10:00 AM', ear: 0.34, blinkRate: 18, screenTime: 15, status: 'Open', riskLevel: 'Low Risk' },
-    { timestamp: '10:15 AM', ear: 0.31, blinkRate: 16, screenTime: 30, status: 'Open', riskLevel: 'Low Risk' },
-    { timestamp: '10:30 AM', ear: 0.25, blinkRate: 12, screenTime: 45, status: 'Open', riskLevel: 'Moderate Risk' },
-    { timestamp: '10:45 AM', ear: 0.19, blinkRate: 8, screenTime: 60, status: 'Dry Eye Risk', riskLevel: 'High Risk' },
-  ]);
+  const [sessionLogs, setSessionLogs] = useState<SessionHistory[]>([]);
 
   // Exercise State
   const [selectedExercise, setSelectedExercise] = useState<number>(0);
@@ -79,6 +70,26 @@ export default function App() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+
+  // ── Real detection ────────────────────────────────────────────────────────
+  // Every metric below is computed from the webcam by MediaPipe FaceLandmarker.
+  // There is no simulated data path.
+  const tracking = useEyeTracking({
+    videoRef,
+    canvasRef,
+    enabled: isMonitoring && backendMode === 'browser',
+  });
+
+  const { ear: earValue, eyeStatus, blinkCount, blinkRate, faceDetected, modelState, fps } = tracking;
+
+  const screenTimeMinutes = screenTimeSeconds / 60;
+  // Only score once the detector has actually seen a face this session.
+  const hasMeasurements = faceDetected || screenTimeSeconds > 0;
+  const riskAssessment = assessDryEyeRisk(earValue, blinkRate, screenTimeMinutes);
+  const riskLevel = hasMeasurements ? riskAssessment.level : 'Low Risk';
+  const aiHealthScore = hasMeasurements
+    ? calculateHealthScore(earValue, blinkRate, screenTimeMinutes)
+    : 0;
 
   // Toggle Dark Mode
   useEffect(() => {
@@ -112,218 +123,100 @@ export default function App() {
     }, 6000);
   };
 
-  // Screen Time & Simulation Timer
+  // Session timer: advances screen time and periodically logs the measured
+  // metrics. It reads values produced by the detector; it does not invent them.
+  const trackingRef = useRef(tracking);
+  trackingRef.current = tracking;
+
   useEffect(() => {
-    let interval: any;
-    if (isMonitoring) {
-      interval = setInterval(() => {
-        setScreenTimeSeconds(prev => {
-          const next = prev + 1;
-          // Every 30 seconds of simulation, check fatigue & alerts
-          if (next % 30 === 0) {
-            // Simulate dynamic EAR & Blink changes over time
-            const randomEar = Number((0.20 + Math.random() * 0.16).toFixed(2));
-            setEarValue(randomEar);
+    if (!isMonitoring) return;
 
-            // Simulate decreasing blink rate if staring
-            const newBlinkRate = Math.max(6, Math.floor(18 - (next / 60) * 2));
-            setBlinkRate(newBlinkRate);
+    const interval = setInterval(() => {
+      setScreenTimeSeconds(prev => {
+        const next = prev + 1;
+        const t = trackingRef.current;
 
-            // Update Blink Count
-            setBlinkCount(c => c + Math.floor(newBlinkRate / 2));
+        // Accumulate fatigue only while the detector can actually see the user.
+        if (t.faceDetected && t.eyeStatus === 'Dry Eye Risk') {
+          setFatigueSeconds(f => f + 1);
+        }
 
-            // Determine Risk
-            let currentRisk: 'Low Risk' | 'Moderate Risk' | 'High Risk' = 'Low Risk';
-            let status: 'Open' | 'Closed' | 'Dry Eye Risk' = 'Open';
-            let score = 95 - Math.floor(next / 30) * 4;
+        if (next % 15 === 0 && t.faceDetected) {
+          const minutes = next / 60;
+          const { level } = assessDryEyeRisk(t.ear, t.blinkRate, minutes);
 
-            if (newBlinkRate < 10 || randomEar < 0.22) {
-              currentRisk = 'High Risk';
-              status = 'Dry Eye Risk';
-              setFatigueSeconds(f => f + 30);
-              triggerAlert("⚠️ Dry Eye Risk Detected! Please blink more frequently.");
-            } else if (newBlinkRate < 14 || next > 120) {
-              currentRisk = 'Moderate Risk';
-              status = 'Open';
-              setFatigueSeconds(f => f + 10);
-              if (next % 60 === 0) triggerAlert("⏰ Screen time alert: Remember the 20-20-20 rule!");
-            } else {
-              currentRisk = 'Low Risk';
-              status = 'Open';
-            }
+          setSessionLogs(logs => [
+            {
+              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              ear: Number(t.ear.toFixed(2)),
+              blinkRate: t.blinkRate,
+              screenTime: Math.floor(minutes),
+              status: t.eyeStatus,
+              riskLevel: level,
+            },
+            ...logs.slice(0, 9),
+          ]);
 
-            setRiskLevel(currentRisk);
-            setEyeStatus(status);
-            setAiHealthScore(Math.max(45, score));
-
-            // Log history
-            setSessionLogs(logs => [
-              {
-                timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                ear: randomEar,
-                blinkRate: newBlinkRate,
-                screenTime: Math.floor(next / 60),
-                status: status,
-                riskLevel: currentRisk
-              },
-              ...logs.slice(0, 9)
-            ]);
+          if (level === 'High Risk') {
+            triggerAlert("Dry eye risk detected. Please blink more frequently.");
+          } else if (next % 1200 === 0) {
+            triggerAlert("Screen time alert: time for the 20-20-20 rule.");
           }
-          return next;
-        });
-      }, 1000);
-    } else {
-      clearInterval(interval);
-    }
+        }
+
+        return next;
+      });
+    }, 1000);
+
     return () => clearInterval(interval);
-  }, [isMonitoring, voiceAlerts]);
+  }, [isMonitoring]);
 
-  // Webcam Management & AI Canvas Overlay
+  // Webcam lifecycle. The detection loop and canvas drawing live in
+  // useEyeTracking, which renders the video frame and the real landmarks.
+  const [cameraError, setCameraError] = useState<string | null>(null);
+
   useEffect(() => {
-    let animationFrameId: number;
-    
-    const startWebcam = async () => {
-      if (isMonitoring && videoRef.current) {
-        try {
-          const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
-          streamRef.current = stream;
-          if (videoRef.current) {
-            videoRef.current.srcObject = stream;
-            videoRef.current.play();
-          }
-        } catch (err) {
-          console.warn("Webcam access not available or denied. Using high-fidelity AI simulation mode.");
-          // Fallback to simulation mode without failing
-        }
-      }
-    };
-
-    if (isMonitoring) {
-      startWebcam();
-    } else {
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop());
-        streamRef.current = null;
-      }
+    if (!isMonitoring || backendMode !== 'browser') {
+      streamRef.current?.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+      return;
     }
 
-    // Canvas drawing loop for AI Face Mesh & Eye Landmarks simulation
-    const drawAIOverlay = () => {
-      if (!isMonitoring) return;
-      const canvas = canvasRef.current;
-      const video = videoRef.current;
-      if (canvas && video) {
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
-          
-          // If video is playing, draw it, otherwise draw a simulated high-tech scan background
-          if (video.readyState === video.HAVE_ENOUGH_DATA) {
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          } else {
-            // Simulated AI Grid Background
-            ctx.fillStyle = darkMode ? '#0b0f19' : '#0f172a';
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-            
-            // Draw scanning grid
-            ctx.strokeStyle = 'rgba(0, 240, 255, 0.15)';
-            ctx.lineWidth = 1;
-            for (let x = 0; x < canvas.width; x += 40) {
-              ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
-            }
-            for (let y = 0; y < canvas.height; y += 40) {
-              ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
-            }
-          }
+    let cancelled = false;
+    setCameraError(null);
 
-          // Draw Simulated Facial & Eye Landmarks (Mediapipe FaceMesh representation)
-          const centerX = canvas.width / 2;
-          const centerY = canvas.height / 2 - 20;
-          const eyeOffset = 65;
-
-          // Helper to draw eye mesh
-          const drawEyeLandmarks = (ex: number, ey: number, isOpen: boolean) => {
-            ctx.strokeStyle = isOpen ? '#00f0ff' : '#ff0055';
-            ctx.fillStyle = isOpen ? '#00f0ff' : '#ff0055';
-            ctx.lineWidth = 2;
-
-            // Outer eye box glow
-            ctx.shadowColor = isOpen ? '#00f0ff' : '#ff0055';
-            ctx.shadowBlur = 10;
-
-            const heightOffset = isOpen ? 18 : 4;
-            const points = [
-              { x: ex - 25, y: ey },
-              { x: ex - 10, y: ey - heightOffset },
-              { x: ex + 10, y: ey - heightOffset },
-              { x: ex + 25, y: ey },
-              { x: ex + 10, y: ey + heightOffset },
-              { x: ex - 10, y: ey + heightOffset },
-            ];
-
-            // Connect points
-            ctx.beginPath();
-            ctx.moveTo(points[0].x, points[0].y);
-            for (let i = 1; i < points.length; i++) {
-              ctx.lineTo(points[i].x, points[i].y);
-            }
-            ctx.closePath();
-            ctx.stroke();
-
-            // Draw landmark dots
-            points.forEach(p => {
-              ctx.beginPath();
-              ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
-              ctx.fill();
-            });
-
-            ctx.shadowBlur = 0; // reset
-          };
-
-          const isEyeOpen = eyeStatus !== 'Closed';
-          drawEyeLandmarks(centerX - eyeOffset, centerY, isEyeOpen);
-          drawEyeLandmarks(centerX + eyeOffset, centerY, isEyeOpen);
-
-          // Draw Face Bounding Box & HUD
-          ctx.strokeStyle = riskLevel === 'High Risk' ? 'rgba(255, 0, 85, 0.7)' : 'rgba(0, 240, 255, 0.6)';
-          ctx.lineWidth = 2;
-          ctx.strokeRect(centerX - 130, centerY - 80, 260, 220);
-
-          // Corner accents
-          const drawCorner = (x: number, y: number, dx: number, dy: number) => {
-            ctx.beginPath();
-            ctx.moveTo(x + dx, y); ctx.lineTo(x, y); ctx.lineTo(x, y + dy);
-            ctx.stroke();
-          };
-          drawCorner(centerX - 130, centerY - 80, 20, 20);
-          drawCorner(centerX + 130, centerY - 80, -20, 20);
-          drawCorner(centerX - 130, centerY + 140, 20, -20);
-          drawCorner(centerX + 130, centerY + 140, -20, -20);
-
-          // HUD text overlay
-          ctx.fillStyle = '#00f0ff';
-          ctx.font = '14px monospace';
-          ctx.fillText(`AI MESH TRACKING: ACTIVE`, 20, 30);
-          ctx.fillText(`FPS: 30.0 | EAR: ${earValue.toFixed(2)}`, 20, 50);
-          ctx.fillText(`STATUS: ${eyeStatus.toUpperCase()}`, 20, 70);
-          ctx.fillStyle = riskLevel === 'High Risk' ? '#ff0055' : '#00f0ff';
-          ctx.fillText(`RISK: ${riskLevel.toUpperCase()}`, 20, 90);
+    (async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
+        });
+        if (cancelled) {
+          stream.getTracks().forEach(t => t.stop());
+          return;
         }
+        streamRef.current = stream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          await videoRef.current.play();
+        }
+      } catch (err) {
+        if (cancelled) return;
+        console.error("Webcam access failed:", err);
+        setCameraError(
+          err instanceof DOMException && err.name === 'NotAllowedError'
+            ? "Camera permission was denied. Allow camera access and start the scanner again."
+            : "No camera available. Connect a webcam and start the scanner again."
+        );
+        setIsMonitoring(false);
       }
-      animationFrameId = requestAnimationFrame(drawAIOverlay);
-    };
-
-    if (isMonitoring) {
-      drawAIOverlay();
-    }
+    })();
 
     return () => {
-      cancelAnimationFrame(animationFrameId);
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop());
-      }
+      cancelled = true;
+      streamRef.current?.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
     };
-  }, [isMonitoring, earValue, eyeStatus, riskLevel, darkMode]);
+  }, [isMonitoring, backendMode]);
 
   // Exercise Timer Logic
   useEffect(() => {
@@ -359,17 +252,6 @@ export default function App() {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-  };
-
-  // Force a manual blink simulation for testing
-  const simulateManualBlink = () => {
-    setEyeStatus('Closed');
-    setEarValue(0.12);
-    setBlinkCount(c => c + 1);
-    setTimeout(() => {
-      setEyeStatus('Open');
-      setEarValue(0.33);
-    }, 300);
   };
 
   // Eye Exercises Data
@@ -813,10 +695,10 @@ export default function App() {
                 {/* Backend Mode Selector */}
                 <div className="bg-slate-900 border border-slate-700 rounded-xl p-1 flex items-center space-x-1">
                   <button 
-                    onClick={() => setBackendMode('simulated')} 
-                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${backendMode === 'simulated' ? 'bg-cyan-500 text-slate-950 shadow-md' : 'text-slate-400 hover:text-white'}`}
+                    onClick={() => setBackendMode('browser')} 
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${backendMode === 'browser' ? 'bg-cyan-500 text-slate-950 shadow-md' : 'text-slate-400 hover:text-white'}`}
                   >
-                    Simulated AI Mesh
+                    In-Browser (MediaPipe)
                   </button>
                   <button 
                     onClick={() => {
@@ -841,12 +723,11 @@ export default function App() {
                 {/* Reset Session */}
                 <button 
                   onClick={() => {
-                    setBlinkCount(0);
+                    tracking.resetSession();
                     setScreenTimeSeconds(0);
                     setFatigueSeconds(0);
-                    setRiskLevel('Low Risk');
-                    setEyeStatus('Open');
-                    triggerAlert("Session metrics reset successfully.");
+                    setSessionLogs([]);
+                    triggerAlert("Session metrics reset.");
                   }}
                   title="Reset Metrics"
                   className="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-300 hover:text-white transition-all"
@@ -867,11 +748,11 @@ export default function App() {
                     <div className="flex items-center space-x-2">
                       <span className={`w-2.5 h-2.5 rounded-full ${isMonitoring ? 'bg-emerald-500 animate-pulse' : 'bg-slate-600'}`} />
                       <span className="text-xs font-mono font-semibold text-slate-300">
-                        {backendMode === 'simulated' ? 'CLIENT-SIDE AI MESH PIPELINE' : 'PYTHON OPENCV FLASK STREAM (localhost:5000)'}
+                        {backendMode === 'browser' ? 'MEDIAPIPE FACELANDMARKER · IN-BROWSER (WASM)' : 'PYTHON OPENCV FLASK STREAM (localhost:5000)'}
                       </span>
                     </div>
                     <div className="text-xs font-mono text-cyan-400">
-                      {isMonitoring ? 'LIVE 30 FPS' : 'STANDBY'}
+                      {isMonitoring ? (fps > 0 ? `LIVE ${fps} FPS` : 'STARTING…') : 'STANDBY'}
                     </div>
                   </div>
 
@@ -885,7 +766,7 @@ export default function App() {
                             src="http://localhost:5000/api/video_feed" 
                             alt="Python OpenCV Video Feed" 
                             onError={(e) => {
-                              // If python backend is not running locally, show beautiful simulated fallback
+                              // Flask server is not reachable; the overlay below explains how to start it.
                               e.currentTarget.style.display = 'none';
                             }}
                             className="w-full h-full object-cover"
@@ -894,10 +775,10 @@ export default function App() {
                             <AlertTriangle className="w-12 h-12 text-yellow-400 mb-3 animate-pulse" />
                             <h3 className="text-lg font-bold text-white mb-1">Python Backend Not Detected</h3>
                             <p className="text-xs text-slate-400 max-w-md mb-4">
-                              Could not connect to `http://localhost:5000`. Make sure you run `python app.py` in the backend folder. Switching back to Simulated AI Mesh Mode.
+                              Could not connect to `http://localhost:5000`. Make sure you run `python app.py` in the backend folder. Switch back to in-browser detection instead.
                             </p>
                             <button 
-                              onClick={() => setBackendMode('simulated')}
+                              onClick={() => setBackendMode('browser')}
                               className="px-4 py-2 rounded-xl bg-cyan-500 text-slate-950 font-bold text-xs"
                             >
                               Use Simulated AI Mesh Mode
@@ -913,8 +794,47 @@ export default function App() {
                     ) : (
                       <>
                         <video ref={videoRef} className="absolute inset-0 w-full h-full object-cover hidden" playsInline muted />
-                        <canvas ref={canvasRef} width={640} height={360} className="w-full h-full object-cover" />
-                        
+                        <canvas ref={canvasRef} width={640} height={480} className="w-full h-full object-cover" />
+
+                        {/* Model download / camera failure / no-face states */}
+                        {isMonitoring && modelState === 'loading' && (
+                          <div className="absolute inset-0 bg-slate-950/85 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-center">
+                            <div className="w-10 h-10 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin mb-4" />
+                            <p className="text-sm font-semibold text-white">Loading face tracking model…</p>
+                            <p className="text-xs text-slate-400 mt-1">Downloading MediaPipe FaceLandmarker (about 3.6 MB, first run only)</p>
+                          </div>
+                        )}
+
+                        {isMonitoring && modelState === 'error' && (
+                          <div className="absolute inset-0 bg-slate-950/90 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-center">
+                            <AlertTriangle className="w-12 h-12 text-red-400 mb-3" />
+                            <h3 className="text-lg font-bold text-white mb-1">Model failed to load</h3>
+                            <p className="text-xs text-slate-400 max-w-md">{tracking.errorMessage}</p>
+                          </div>
+                        )}
+
+                        {cameraError && (
+                          <div className="absolute inset-0 bg-slate-950/90 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-center">
+                            <AlertTriangle className="w-12 h-12 text-yellow-400 mb-3" />
+                            <h3 className="text-lg font-bold text-white mb-1">Camera unavailable</h3>
+                            <p className="text-xs text-slate-400 max-w-md">{cameraError}</p>
+                          </div>
+                        )}
+
+                        {isMonitoring && modelState === 'ready' && !faceDetected && !cameraError && (
+                          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 px-4 py-2 rounded-full bg-slate-950/85 border border-slate-700 backdrop-blur-sm">
+                            <p className="text-xs font-medium text-slate-300">No face detected — centre yourself in the frame</p>
+                          </div>
+                        )}
+
+                        {tracking.isCalibrating && (
+                          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 px-4 py-2 rounded-full bg-cyan-500/20 border border-cyan-400/50 backdrop-blur-sm">
+                            <p className="text-xs font-semibold text-cyan-200">
+                              Keep your eyes open normally… {Math.ceil(CALIBRATION_SECONDS * (1 - tracking.calibrationProgress))}s
+                            </p>
+                          </div>
+                        )}
+
                         {!isMonitoring && (
                           <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-center">
                             <div className="p-4 rounded-full bg-cyan-500/10 border border-cyan-500/30 mb-4 animate-bounce">
@@ -922,7 +842,7 @@ export default function App() {
                             </div>
                             <h3 className="text-xl font-bold text-white mb-2">Webcam AI Feed Standby</h3>
                             <p className="text-xs text-slate-400 max-w-sm mb-6">
-                              Click Start Scanner above to initialize Mediapipe Face Mesh and begin real-time eye landmark tracking.
+                              Click Start Scanner to run MediaPipe FaceLandmarker in your browser. Video never leaves your device.
                             </p>
                             <button 
                               onClick={() => setIsMonitoring(true)} 
@@ -944,25 +864,35 @@ export default function App() {
                   {/* Bottom Feed HUD */}
                   <div className="bg-slate-900 p-4 border-t border-slate-800 grid grid-cols-2 sm:grid-cols-4 gap-4">
                     <div>
-                      <span className="text-[10px] font-medium text-slate-400 uppercase tracking-wider block">EAR Threshold</span>
-                      <span className="text-sm font-mono font-bold text-white">0.21 (Standard)</span>
+                      <span className="text-[10px] font-medium text-slate-400 uppercase tracking-wider block">Blink Threshold</span>
+                      <span className="text-sm font-mono font-bold text-white">
+                        {tracking.earThreshold.toFixed(3)}
+                        <span className="text-[10px] text-slate-500 ml-1">
+                          {tracking.baselineEar ? 'calibrated' : 'default'}
+                        </span>
+                      </span>
                     </div>
                     <div>
-                      <span className="text-[10px] font-medium text-slate-400 uppercase tracking-wider block">Face Mesh Nodes</span>
-                      <span className="text-sm font-mono font-bold text-cyan-400">468 Landmarks</span>
+                      <span className="text-[10px] font-medium text-slate-400 uppercase tracking-wider block">Face Tracking</span>
+                      <span className={`text-sm font-mono font-bold ${faceDetected ? 'text-emerald-400' : 'text-slate-500'}`}>
+                        {faceDetected ? 'LOCKED' : 'NO FACE'}
+                      </span>
                     </div>
                     <div>
                       <span className="text-[10px] font-medium text-slate-400 uppercase tracking-wider block">Eye Aspect Ratio</span>
-                      <span className="text-sm font-mono font-bold text-blue-400">{earValue.toFixed(2)}</span>
+                      <span className="text-sm font-mono font-bold text-blue-400">{earValue.toFixed(3)}</span>
                     </div>
                     <div>
-                      <span className="text-[10px] font-medium text-slate-400 uppercase tracking-wider block">Manual Test</span>
+                      <span className="text-[10px] font-medium text-slate-400 uppercase tracking-wider block">Personal Baseline</span>
                       <button 
-                        onClick={simulateManualBlink}
-                        disabled={!isMonitoring}
+                        onClick={tracking.startCalibration}
+                        disabled={!isMonitoring || !faceDetected || tracking.isCalibrating}
+                        title="Measure your own resting eye openness for a more accurate blink threshold"
                         className="mt-0.5 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-cyan-300 border border-slate-700 w-full disabled:opacity-50"
                       >
-                        Simulate Blink
+                        {tracking.isCalibrating
+                          ? `Calibrating ${Math.round(tracking.calibrationProgress * 100)}%`
+                          : tracking.baselineEar ? 'Recalibrate' : 'Calibrate'}
                       </button>
                     </div>
                   </div>
@@ -1175,9 +1105,9 @@ export default function App() {
                     <Eye className="w-5 h-5 text-cyan-400" />
                   </div>
                 </div>
-                <div className="text-3xl font-extrabold text-white font-mono mb-1">{blinkCount + 142}</div>
-                <div className="text-xs text-emerald-400 flex items-center gap-1">
-                  <span>↑ 12% vs last session</span>
+                <div className="text-3xl font-extrabold text-white font-mono mb-1">{blinkCount}</div>
+                <div className="text-xs text-slate-500 flex items-center gap-1">
+                  <span>This session</span>
                 </div>
               </div>
 
@@ -1200,9 +1130,13 @@ export default function App() {
                   </div>
                 </div>
                 <div className="text-3xl font-extrabold text-white font-mono mb-1">
-                  {Math.floor(screenTimeSeconds / 60) + 18} <span className="text-base font-normal text-slate-400">mins</span>
+                  {Math.floor(screenTimeSeconds / 60)} <span className="text-base font-normal text-slate-400">mins</span>
                 </div>
-                <div className="text-xs text-yellow-400">Take a break in 12 mins</div>
+                <div className="text-xs text-yellow-400">
+                  {screenTimeSeconds >= 3600
+                    ? 'Take a break now'
+                    : `Take a break in ${60 - Math.floor(screenTimeSeconds / 60)} mins`}
+                </div>
               </div>
 
               <div className="glass-panel border border-slate-800 rounded-3xl p-6 shadow-xl">
@@ -1213,9 +1147,13 @@ export default function App() {
                   </div>
                 </div>
                 <div className="text-3xl font-extrabold text-white font-mono mb-1">
-                  {riskLevel === 'High Risk' ? '78%' : riskLevel === 'Moderate Risk' ? '42%' : '14%'}
+                  {hasMeasurements ? `${Math.round((riskAssessment.score / 7) * 100)}%` : '--'}
                 </div>
-                <div className="text-xs text-slate-400">Status: <span className="text-cyan-400 font-semibold">{riskLevel}</span></div>
+                <div className="text-xs text-slate-400">
+                  Status: <span className="text-cyan-400 font-semibold">
+                    {hasMeasurements ? riskLevel : 'No data yet'}
+                  </span>
+                </div>
               </div>
             </div>
 
@@ -1230,81 +1168,70 @@ export default function App() {
                 </h3>
 
                 <div className="space-y-5">
-                  <div>
-                    <div className="flex justify-between text-xs font-semibold mb-2">
-                      <span className="text-slate-300">Tear Film Stability (Estimated)</span>
-                      <span className="text-cyan-400 font-mono">82%</span>
+                  {[
+                    {
+                      label: 'Eye Openness (EAR vs threshold)',
+                      value: tracking.earThreshold > 0
+                        ? Math.round(Math.min(100, (earValue / (tracking.earThreshold / 0.78)) * 100))
+                        : 0,
+                      bar: 'from-cyan-500 to-blue-500',
+                      text: 'text-cyan-400',
+                    },
+                    {
+                      label: 'Blink Rate vs optimal (15-20/min)',
+                      value: Math.round(Math.min(100, (blinkRate / 17) * 100)),
+                      bar: 'from-blue-500 to-indigo-500',
+                      text: 'text-blue-400',
+                    },
+                    {
+                      label: 'Eye Strain (inverse of health score)',
+                      value: hasMeasurements ? 100 - aiHealthScore : 0,
+                      bar: 'from-yellow-500 to-orange-500',
+                      text: 'text-yellow-400',
+                    },
+                  ].map(item => (
+                    <div key={item.label}>
+                      <div className="flex justify-between text-xs font-semibold mb-2">
+                        <span className="text-slate-300">{item.label}</span>
+                        <span className={`${item.text} font-mono`}>{item.value}%</span>
+                      </div>
+                      <div className="w-full bg-slate-800 h-3 rounded-full overflow-hidden">
+                        <div
+                          className={`bg-gradient-to-r ${item.bar} h-full rounded-full transition-all duration-500`}
+                          style={{ width: `${Math.max(0, Math.min(100, item.value))}%` }}
+                        />
+                      </div>
                     </div>
-                    <div className="w-full bg-slate-800 h-3 rounded-full overflow-hidden">
-                      <div className="bg-gradient-to-r from-cyan-500 to-blue-500 h-full rounded-full" style={{ width: '82%' }} />
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="flex justify-between text-xs font-semibold mb-2">
-                      <span className="text-slate-300">Blink Completeness Ratio</span>
-                      <span className="text-blue-400 font-mono">91%</span>
-                    </div>
-                    <div className="w-full bg-slate-800 h-3 rounded-full overflow-hidden">
-                      <div className="bg-gradient-to-r from-blue-500 to-indigo-500 h-full rounded-full" style={{ width: '91%' }} />
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="flex justify-between text-xs font-semibold mb-2">
-                      <span className="text-slate-300">Eye Strain Level</span>
-                      <span className="text-yellow-400 font-mono">28%</span>
-                    </div>
-                    <div className="w-full bg-slate-800 h-3 rounded-full overflow-hidden">
-                      <div className="bg-gradient-to-r from-yellow-500 to-orange-500 h-full rounded-full" style={{ width: '28%' }} />
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="flex justify-between text-xs font-semibold mb-2">
-                      <span className="text-slate-300">Hydration Impact Score</span>
-                      <span className="text-emerald-400 font-mono">75%</span>
-                    </div>
-                    <div className="w-full bg-slate-800 h-3 rounded-full overflow-hidden">
-                      <div className="bg-gradient-to-r from-emerald-500 to-teal-500 h-full rounded-full" style={{ width: '75%' }} />
-                    </div>
-                  </div>
+                  ))}
+                  <p className="text-[10px] text-slate-500 leading-relaxed pt-1">
+                    Derived from the Eye Aspect Ratio and blink rate measured this session.
+                    Not a clinical assessment.
+                  </p>
                 </div>
 
-                {/* Circular Chart Representation */}
+                {/* Live session figures */}
                 <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 flex items-center justify-around mt-6">
-                  <div className="text-center">
-                    <div className="relative w-20 h-20 flex items-center justify-center mx-auto mb-2">
-                      <svg className="w-full h-full transform -rotate-90" viewBox="0 0 36 36">
-                        <path className="text-slate-800" strokeWidth="3" stroke="currentColor" fill="none" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
-                        <path className="text-cyan-400" strokeDasharray="85, 100" strokeWidth="3.5" strokeLinecap="round" stroke="currentColor" fill="none" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
-                      </svg>
-                      <div className="absolute text-sm font-bold text-white font-mono">85%</div>
+                  {[
+                    { label: 'Health Score', value: aiHealthScore, suffix: '%', colour: 'text-cyan-400' },
+                    { label: 'Detector FPS', value: fps, suffix: '', colour: 'text-blue-400' },
+                    { label: 'Blinks / min', value: blinkRate, suffix: '', colour: 'text-emerald-400' },
+                  ].map(g => (
+                    <div key={g.label} className="text-center">
+                      <div className="relative w-20 h-20 flex items-center justify-center mx-auto mb-2">
+                        <svg className="w-full h-full transform -rotate-90" viewBox="0 0 36 36">
+                          <path className="text-slate-800" strokeWidth="3" stroke="currentColor" fill="none" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                          <path
+                            className={g.colour}
+                            strokeDasharray={`${Math.max(0, Math.min(100, g.suffix === '%' ? g.value : g.value * 3))}, 100`}
+                            strokeWidth="3.5" strokeLinecap="round" stroke="currentColor" fill="none"
+                            d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                          />
+                        </svg>
+                        <div className="absolute text-sm font-bold text-white font-mono">{g.value}{g.suffix}</div>
+                      </div>
+                      <span className="text-xs text-slate-400 font-semibold">{g.label}</span>
                     </div>
-                    <span className="text-xs text-slate-400 font-semibold">AI Confidence</span>
-                  </div>
-
-                  <div className="text-center">
-                    <div className="relative w-20 h-20 flex items-center justify-center mx-auto mb-2">
-                      <svg className="w-full h-full transform -rotate-90" viewBox="0 0 36 36">
-                        <path className="text-slate-800" strokeWidth="3" stroke="currentColor" fill="none" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
-                        <path className="text-blue-400" strokeDasharray="94, 100" strokeWidth="3.5" strokeLinecap="round" stroke="currentColor" fill="none" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
-                      </svg>
-                      <div className="absolute text-sm font-bold text-white font-mono">94%</div>
-                    </div>
-                    <span className="text-xs text-slate-400 font-semibold">Mesh Accuracy</span>
-                  </div>
-
-                  <div className="text-center">
-                    <div className="relative w-20 h-20 flex items-center justify-center mx-auto mb-2">
-                      <svg className="w-full h-full transform -rotate-90" viewBox="0 0 36 36">
-                        <path className="text-slate-800" strokeWidth="3" stroke="currentColor" fill="none" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
-                        <path className="text-emerald-400" strokeDasharray="72, 100" strokeWidth="3.5" strokeLinecap="round" stroke="currentColor" fill="none" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
-                      </svg>
-                      <div className="absolute text-sm font-bold text-white font-mono">72%</div>
-                    </div>
-                    <span className="text-xs text-slate-400 font-semibold">Ergonomic Score</span>
-                  </div>
+                  ))}
                 </div>
               </div>
 
@@ -1331,6 +1258,13 @@ export default function App() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800/60 text-slate-300">
+                        {sessionLogs.length === 0 && (
+                          <tr>
+                            <td colSpan={5} className="p-6 text-center text-slate-500">
+                              No sessions recorded yet. Start the scanner to begin logging.
+                            </td>
+                          </tr>
+                        )}
                         {sessionLogs.map((log, idx) => (
                           <tr key={idx} className="hover:bg-slate-800/40 transition-colors">
                             <td className="p-3 font-semibold text-white">{log.timestamp}</td>
