@@ -1,0 +1,6 @@
+timestamp,ear,screen_time,blink_status,risk_assessment
+1711900000,0.32,15.2,Open,Low Risk
+1711900060,0.18,16.2,Closed,Low Risk
+1711900120,0.30,17.2,Open,Low Risk
+1711900180,0.20,18.2,Closed,Moderate Risk
+1711900240,0.15,19.2,Closed,High Risk

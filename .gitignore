@@ -1,0 +1,47 @@
+# ── Dependencies ────────────────────────────────────────────────────────────
+node_modules/
+backend/venv/
+venv/
+env/
+.venv/
+
+# ── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+pip-log.txt
+.pytest_cache/
+
+# ── Build output ────────────────────────────────────────────────────────────
+dist/
+build/
+*.tsbuildinfo
+
+# ── MediaPipe model ─────────────────────────────────────────────────────────
+# ~3.6 MB binary, downloaded automatically on first run by
+# backend/utils/detector.py::_ensure_model(). No need to version it.
+backend/models/*.task
+
+# ── Generated reports ───────────────────────────────────────────────────────
+assets/*.csv
+!assets/sample_report.csv
+
+# ── Environment & secrets ───────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Editors / OS ────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Logs ────────────────────────────────────────────────────────────────────
+*.log
+npm-debug.log*
+yarn-error.log*
