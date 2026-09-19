@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  frontend:
+    name: Frontend (typecheck, test, build)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Production build
+        run: npm run build
+
+  backend:
+    name: Backend (import check)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r backend/requirements.txt
+
+      # The EAR maths has no OpenCV or camera dependency, so it can be checked
+      # in CI. Guards against requirements.txt drifting out of date, which
+      # matters because the venv is not committed.
+      - name: Import and smoke-test the risk model
+        run: |
+          cd backend
+          python -c "
+          from models.ear_calc import calculate_ear, assess_dry_eye_risk, calculate_health_score
+
+          eye = [(0, 0), (3, -2), (7, -2), (10, 0), (7, 2), (3, 2)]
+          ear = calculate_ear(eye)
+          assert abs(ear - 0.4) < 1e-9, f'EAR was {ear}, expected 0.4'
+
+          # Degenerate geometry must not raise or return infinity.
+          assert calculate_ear([(0, 0)] * 6) == 0.0
+
+          assert assess_dry_eye_risk(0.3, 18, 10) == ('Low Risk', 0)
+          assert assess_dry_eye_risk(0.3, 7, 61)[0] == 'High Risk'
+          assert calculate_health_score(0.32, 17, 10) == 100
+
+          print('backend risk model OK')
+          "
+
+  parity:
+    name: Python and TypeScript agree
+    runs-on: ubuntu-latest
+    needs: [frontend, backend]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: npm ci
+
+      # The browser and the Flask server each implement the same scoring. If
+      # they drift, the same session produces different numbers depending on
+      # which path the user is on. This runs both over the same grid and
+      # compares; it skips locally when no Python is on PATH.
+      - name: Compare scores across both implementations
+        run: npx vitest run src/lib/parity.test.ts
