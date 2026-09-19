@@ -2,6 +2,8 @@ import { Activity, AlertTriangle, BarChart3, Clock, Download, Eye, FileText, Hea
 import type { EyeTrackingResult } from '../hooks/useEyeTracking';
 import type { RiskLevel } from '../lib/ear';
 import type { SessionHistory } from '../types';
+import HistoryPanel from './HistoryPanel';
+import type { useSessionHistory } from '../hooks/useSessionHistory';
 
 interface Props {
   tracking: EyeTrackingResult;
@@ -12,11 +14,13 @@ interface Props {
   hasMeasurements: boolean;
   sessionLogs: SessionHistory[];
   handleDownloadCSV: () => void;
+  /** Long-term history from the Flask backend. */
+  history: ReturnType<typeof useSessionHistory>;
 }
 
 export default function DashboardPage({
   tracking, screenTimeSeconds, riskLevel, riskAssessment, aiHealthScore,
-  hasMeasurements, sessionLogs, handleDownloadCSV,
+  hasMeasurements, sessionLogs, handleDownloadCSV, history,
 }: Props) {
   const { ear: earValue, blinkCount, blinkRate, fps } = tracking;
 
@@ -101,6 +105,19 @@ export default function DashboardPage({
           </div>
         </div>
       </div>
+
+      {/* Long-term history, stored by the backend */}
+      <HistoryPanel
+        available={history.available}
+        loading={history.loading}
+        daily={history.daily}
+        summary={history.summary}
+        sessions={history.sessions}
+        rangeDays={history.rangeDays}
+        setRangeDays={history.setRangeDays}
+        refresh={history.refresh}
+        clear={history.clear}
+      />
 
       {/* Interactive Charts & Progress Bars */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">

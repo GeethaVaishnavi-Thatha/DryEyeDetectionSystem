@@ -11,6 +11,7 @@ import AboutPage from './components/AboutPage';
 import FuturePage from './components/FuturePage';
 
 import { useEyeTracking } from './hooks/useEyeTracking';
+import { useSessionHistory, useSessionRecorder } from './hooks/useSessionHistory';
 import { assessDryEyeRisk, calculateHealthScore } from './lib/ear';
 import type { SessionHistory, TabId } from './types';
 
@@ -45,6 +46,11 @@ export default function App() {
   });
 
   const { ear: earValue, blinkRate, faceDetected } = tracking;
+
+  // The browser detects; the Flask backend remembers. History degrades to
+  // empty when the backend is not running.
+  const history = useSessionHistory();
+  const recorder = useSessionRecorder(isMonitoring);
 
   const screenTimeMinutes = screenTimeSeconds / 60;
   // Only score once the detector has actually seen a face this session,
@@ -90,8 +96,9 @@ export default function App() {
         const next = prev + 1;
         const t = trackingRef.current;
 
-        if (t.faceDetected && t.eyeStatus === 'Dry Eye Risk') {
-          setFatigueSeconds(f => f + 1);
+        if (t.faceDetected) {
+          recorder.sample(t.ear, t.blinkRate);
+          if (t.eyeStatus === 'Dry Eye Risk') setFatigueSeconds(f => f + 1);
         }
 
         if (next % 15 === 0 && t.faceDetected) {
@@ -122,7 +129,7 @@ export default function App() {
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [isMonitoring, triggerAlert]);
+  }, [isMonitoring, triggerAlert, recorder]);
 
   // ── Webcam lifecycle ──────────────────────────────────────────────────────
   // The detection loop and canvas drawing live in useEyeTracking.
@@ -168,6 +175,37 @@ export default function App() {
       streamRef.current = null;
     };
   }, [isMonitoring, backendMode]);
+
+  // ── Persist a finished session ────────────────────────────────────────────
+  // Captured in refs because this runs on the transition to stopped, by which
+  // point the counters are about to be reset.
+  const finishRef = useRef<{
+    screenTimeSeconds: number; fatigueSeconds: number; tracking: typeof tracking;
+    riskAssessment: typeof riskAssessment; aiHealthScore: number;
+  }>({ screenTimeSeconds, fatigueSeconds, tracking, riskAssessment, aiHealthScore });
+  finishRef.current = { screenTimeSeconds, fatigueSeconds, tracking, riskAssessment, aiHealthScore };
+
+  const wasMonitoringRef = useRef(false);
+  useEffect(() => {
+    const wasMonitoring = wasMonitoringRef.current;
+    wasMonitoringRef.current = isMonitoring;
+    if (wasMonitoring === isMonitoring || isMonitoring) return;
+
+    const f = finishRef.current;
+    const draft = recorder.build({
+      durationSeconds: f.screenTimeSeconds,
+      blinkCount: f.tracking.blinkCount,
+      fatigueSeconds: f.fatigueSeconds,
+      riskLevel: f.riskAssessment.level,
+      riskScore: f.riskAssessment.score,
+      healthScore: f.aiHealthScore,
+      calibrated: f.tracking.baselineEar !== null,
+      baselineEar: f.tracking.baselineEar,
+      earThreshold: f.tracking.earThreshold,
+    });
+
+    if (draft) void history.save(draft);
+  }, [isMonitoring, recorder, history]);
 
   // ── Actions ───────────────────────────────────────────────────────────────
   const handleResetSession = useCallback(() => {
@@ -252,6 +290,7 @@ export default function App() {
             hasMeasurements={hasMeasurements}
             sessionLogs={sessionLogs}
             handleDownloadCSV={handleDownloadCSV}
+            history={history}
           />
         )}
 

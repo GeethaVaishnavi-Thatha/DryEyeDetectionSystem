@@ -24,6 +24,11 @@ build/
 # backend/utils/detector.py::_ensure_model(). No need to version it.
 backend/models/*.task
 
+# ── Session database ────────────────────────────────────────────────────────
+# Local history; each developer's own. Created on first backend start.
+backend/sessions.db
+*.db-journal
+
 # ── Generated reports ───────────────────────────────────────────────────────
 assets/*.csv
 !assets/sample_report.csv

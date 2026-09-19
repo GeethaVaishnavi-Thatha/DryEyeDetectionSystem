@@ -21,6 +21,7 @@ from flask_cors import CORS
 
 from models.ear_calc import calculate_ear, assess_dry_eye_risk, calculate_health_score
 from utils.detector import EyeDetector
+import db
 
 # ---------------------------------------------------------------------------
 # Logging Configuration
@@ -38,6 +39,10 @@ logger = logging.getLogger("dry_eye_backend")
 # ---------------------------------------------------------------------------
 app = Flask(__name__)
 CORS(app)
+
+# Sessions are recorded by the browser and stored here; the browser has no
+# durable storage of its own, so this is what makes history possible.
+db.init_db()
 
 # ---------------------------------------------------------------------------
 # Thread-Safe Session State
@@ -345,10 +350,112 @@ def export_csv():
     return send_file(file_path, as_attachment=True, download_name="dry_eye_report.csv")
 
 
+
+# ---------------------------------------------------------------------------
+# Session History
+#
+# Detection runs in the browser. This stores finished sessions so the dashboard
+# can show trends across days rather than resetting on every page load.
+# ---------------------------------------------------------------------------
+
+REQUIRED_SESSION_FIELDS = ("started_at", "ended_at", "duration_seconds")
+
+
+def _bad_request(message):
+    return jsonify({"success": False, "error": message}), 400
+
+
+@app.route("/api/sessions", methods=["POST"])
+def create_session():
+    """Record one finished session."""
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return _bad_request("Expected a JSON object")
+
+    missing = [f for f in REQUIRED_SESSION_FIELDS if not payload.get(f)]
+    if missing:
+        return _bad_request(f"Missing required field(s): {', '.join(missing)}")
+
+    try:
+        duration = int(payload["duration_seconds"])
+    except (TypeError, ValueError):
+        return _bad_request("duration_seconds must be a whole number of seconds")
+
+    if duration < 0:
+        return _bad_request("duration_seconds cannot be negative")
+
+    # A session shorter than this is a mis-click, not data worth keeping.
+    if duration < 5:
+        return jsonify({
+            "success": False,
+            "skipped": True,
+            "error": "Session too short to record (under 5 seconds)",
+        }), 422
+
+    try:
+        stored = db.insert_session(payload)
+    except Exception as exc:
+        logger.exception("Failed to store session")
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+    logger.info(
+        "Stored session %s: %ss, %s blinks, %s",
+        stored["id"], stored["duration_seconds"],
+        stored["blink_count"], stored["risk_level"],
+    )
+    return jsonify({"success": True, "session": stored}), 201
+
+
+def _int_arg(name, default, lo, hi):
+    """Read a bounded integer query param, ignoring junk."""
+    try:
+        value = int(request.args.get(name, default))
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, value))
+
+
+@app.route("/api/sessions", methods=["GET"])
+def get_sessions():
+    days = _int_arg("days", 30, 1, 365)
+    limit = _int_arg("limit", 200, 1, 1000)
+    sessions = db.list_sessions(days=days, limit=limit)
+    return jsonify({"success": True, "count": len(sessions), "sessions": sessions})
+
+
+@app.route("/api/sessions/stats", methods=["GET"])
+def get_session_stats():
+    """Per-day aggregates plus window totals, for the trend chart."""
+    days = _int_arg("days", 7, 1, 90)
+    return jsonify({
+        "success": True,
+        "days": days,
+        "daily": db.daily_stats(days=days),
+        "summary": db.summary(days=days),
+    })
+
+
+@app.route("/api/sessions/<int:session_id>", methods=["DELETE"])
+def remove_session(session_id):
+    if not db.delete_session(session_id):
+        return jsonify({"success": False, "error": "Session not found"}), 404
+    return jsonify({"success": True, "deleted": session_id})
+
+
+@app.route("/api/sessions", methods=["DELETE"])
+def clear_sessions():
+    db.clear_all()
+    logger.info("Cleared all stored sessions")
+    return jsonify({"success": True})
+
+
 # ---------------------------------------------------------------------------
 # Entry Point
 # ---------------------------------------------------------------------------
 if __name__ == '__main__':
     logger.info("Starting Smart Dry Eye Detection System Backend...")
-    logger.info("API endpoints: /api/health, /api/video_feed, /api/status, /api/reset, /api/export_csv")
+    logger.info(
+        "API endpoints: /api/health, /api/video_feed, /api/status, /api/reset, "
+        "/api/export_csv, /api/sessions, /api/sessions/stats"
+    )
     app.run(host='0.0.0.0', port=5000, debug=True, use_reloader=False)

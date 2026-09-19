@@ -67,6 +67,44 @@ jobs:
           print('backend risk model OK')
           "
 
+      # Storage has no OpenCV or camera dependency either, so the full session
+      # API can be exercised in CI through Flask's test client.
+      - name: Session API round-trip
+        env:
+          DRY_EYE_DB: ":memory:"
+        run: |
+          cd backend
+          python -c "
+          import os, tempfile
+          os.environ['DRY_EYE_DB'] = os.path.join(tempfile.mkdtemp(), 'ci.db')
+          import db
+          from datetime import datetime, timedelta, timezone
+          db.init_db()
+
+          now = datetime.now(timezone.utc)
+          db.insert_session({
+              'started_at': now.isoformat(timespec='seconds'),
+              'ended_at': (now + timedelta(seconds=600)).isoformat(timespec='seconds'),
+              'duration_seconds': 600, 'blink_count': 180, 'avg_blink_rate': 18.0,
+              'avg_ear': 0.29, 'min_ear': 0.08, 'health_score': 90,
+              'risk_level': 'Low Risk', 'not_a_column': 'ignored',
+          })
+
+          rows = db.list_sessions(days=1)
+          assert len(rows) == 1, rows
+          assert 'not_a_column' not in rows[0], 'column whitelist leaked'
+
+          daily = db.daily_stats(days=7)
+          assert len(daily) == 7, 'daily stats must zero-fill the window'
+
+          summary = db.summary(days=7)
+          assert summary['total_blinks'] == 180, summary
+
+          assert db.delete_session(rows[0]['id'])
+          assert db.list_sessions(days=1) == []
+          print('session API OK')
+          "
+
   parity:
     name: Python and TypeScript agree
     runs-on: ubuntu-latest

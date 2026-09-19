@@ -78,9 +78,13 @@ The app asks for camera permission when you press **Start Scanner**.
 
 ### Backend (optional)
 
-The Flask server does the same detection server-side with OpenCV, streaming an
-annotated MJPEG feed. The app works fully without it — it exists as an
-alternative pipeline, selectable from the mode toggle.
+The browser detects blinks but has no durable storage, so it forgets everything
+when you close the tab. The Flask server is what remembers: it stores finished
+sessions and serves the history the dashboard charts.
+
+It also still offers server-side detection over an MJPEG stream, selectable from
+the mode toggle. The app works fully without the backend — you just lose history
+across days.
 
 ```bash
 cd backend
@@ -93,6 +97,18 @@ python app.py                # http://localhost:5000
 
 It downloads the same model on first run.
 
+**Session history**
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /api/sessions` | Record a finished session |
+| `GET /api/sessions?days=&limit=` | Sessions in a window, newest first |
+| `GET /api/sessions/stats?days=` | Per-day aggregates plus window totals |
+| `DELETE /api/sessions/{id}` | Remove one session |
+| `DELETE /api/sessions` | Clear all history |
+
+**Detection and status**
+
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /api/video_feed` | MJPEG stream with eye contours and EAR drawn on |
@@ -100,6 +116,12 @@ It downloads the same model on first run.
 | `GET /api/health` | Liveness check |
 | `POST /api/reset` | Clear session counters |
 | `GET /api/export_csv` | Session log as CSV |
+
+Storage is SQLite in `backend/sessions.db` — a single file, no database server
+to install. Override the path with the `DRY_EYE_DB` environment variable.
+
+Sessions shorter than five seconds are rejected with a 422; they are mis-clicks,
+not data. The frontend treats that as expected rather than as an error.
 
 ### Tests
 
@@ -123,11 +145,15 @@ src/
   lib/ear.ts              EAR, risk scoring, health score. Pure functions.
   lib/ear.test.ts         Unit tests, including scale invariance and boundaries
   lib/parity.test.ts      Asserts the TS and Python agree
+  lib/sessionApi.ts       Client for the history API. Fails soft when it is down.
   hooks/useEyeTracking.ts MediaPipe loop, blink counting, calibration, overlay
-  App.tsx                 UI
+  hooks/useSessionHistory.ts  Records finished sessions, reads history back
+  components/             One file per tab, plus Header, Footer, HistoryPanel
+  App.tsx                 State and wiring
 
 backend/
-  app.py                  Flask API and MJPEG streaming
+  app.py                  Flask API: session history, MJPEG streaming
+  db.py                   SQLite storage and the daily aggregates
   utils/detector.py       FaceLandmarker wrapper
   models/ear_calc.py      Same maths as lib/ear.ts, in Python
 ```
@@ -145,6 +171,11 @@ initialisation against 8 seconds and retries on CPU.
 
 **The scoring is duplicated in Python and TypeScript** rather than shared. The
 parity test is what keeps them honest.
+
+**The two halves do different jobs.** Detection runs in the browser because it
+is faster there and the video never has to leave the machine. Storage runs in
+the backend because a browser cannot keep history a user can rely on. Neither
+duplicates the other, and the app still works if the backend is absent.
 
 ---
 
