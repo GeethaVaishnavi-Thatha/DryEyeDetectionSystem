@@ -1,104 +1,173 @@
-# 👁️ Smart Dry Eye Detection System
+# Dry Eye Detection System
 
-> **AI-Based Real-Time Eye Health Monitoring Using Computer Vision**
+Tracks how often you blink while you work, and warns you when you stop.
 
-![Theme](https://img.shields.io/badge/Theme-Healthcare%20AI-00f0ff?style=for-the-badge)
-![Python](https://img.shields.io/badge/Python-3.10+-blue?style=for-the-badge&logo=python&logoColor=white)
-![OpenCV](https://img.shields.io/badge/OpenCV-4.9-green?style=for-the-badge&logo=opencv&logoColor=white)
-![Mediapipe](https://img.shields.io/badge/Mediapipe-0.10-orange?style=for-the-badge)
-![React](https://img.shields.io/badge/React-19-61dafb?style=for-the-badge&logo=react&logoColor=black)
+Staring at a screen suppresses blink rate — studies put the drop at roughly half
+the normal 15–20 blinks per minute. Fewer blinks means the tear film breaks up,
+which is what makes eyes feel dry and gritty after a long day. This watches for
+that happening and tells you.
 
----
-
-## 📖 Project Overview
-
-The **Smart Dry Eye Detection System** is an advanced AI healthcare web application designed to combat digital eye strain and dry eye syndrome caused by excessive screen exposure. By leveraging state-of-the-art Computer Vision algorithms (OpenCV & Mediapipe Face Mesh), the system continuously monitors the user's eye landmarks in real time, tracks blinking frequency, calculates the Eye Aspect Ratio (EAR), and provides proactive health alerts.
+Detection runs entirely in the browser using MediaPipe FaceLandmarker. **Video
+never leaves your machine** — there is no upload and no server round-trip.
 
 ---
 
-## ✨ Key Features
+## How it works
 
-1. **🏥 Home Page & About Section**: Premium neon healthcare design explaining Dry Eye Syndrome, the importance of blinking, and system benefits.
-2. **📹 Real-Time Webcam Detection**: Live facial landmark tracking using OpenCV and Mediapipe Face Mesh.
-3. **👁️ Blink Detection & EAR Calculation**: Real-time Eye Aspect Ratio (EAR) computation to accurately classify eye status (`Open`, `Closed`, `Dry Eye Risk`).
-4. **⏱️ Screen Time & Fatigue Monitoring**: Continuous tracking of session duration with automated "Take Eye Rest" popups.
-5. **📊 Dry Eye Risk Analysis**: Multi-factor AI analysis categorizing users into `Low Risk`, `Moderate Risk`, or `High Risk`.
-6. **🚨 Intelligent Alert System**: Visual popup notifications, warning cards, and synthesized voice alerts (e.g., *"Please Blink More"*, *"Follow the 20-20-20 Rule"*).
-7. **📈 Modern Analytics Dashboard**: Interactive charts, progress bars, and vital health indicators.
-8. **💡 Health Recommendations**: Actionable tips to reduce eye fatigue and maintain hydration.
-9. **🧘 Eye Exercise Page**: Guided, animated eye relaxation routines with built-in interactive timers.
-10. **🌓 Dark/Light Mode**: Full support for both futuristic dark mode and clean medical light mode.
-11. **📥 CSV Report Export**: Downloadable session analytics for medical review.
+MediaPipe puts 468 landmarks on your face. Six of them per eye are enough to
+measure how open it is, using the **Eye Aspect Ratio**:
 
----
-
-## 📂 Project Structure
-
-```bash
-├── backend/
-│   ├── app.py                 # Flask REST API & Video Streaming Server
-│   ├── requirements.txt       # Python Dependencies
-│   ├── models/
-│   │   └── ear_calc.py        # Eye Aspect Ratio & Risk Math Models
-│   └── utils/
-│       └── detector.py        # OpenCV & Mediapipe Face Mesh Wrapper
-├── src/                       # React 19 Frontend Codebase
-│   ├── App.tsx                # Main Application Entry & Routing
-│   ├── index.css              # Tailwind CSS & Custom Neon Glassmorphism
-│   └── main.tsx               # React DOM Mounting
-├── templates/                 # Flask HTML Templates
-├── static/                    # Flask Static Assets
-├── assets/                    # Generated CSV Reports & Media Assets
-└── README.md                  # System Documentation
+```
+        P2 ────── P3
+   P1 ·              · P4          EAR = ‖P2−P6‖ + ‖P3−P5‖
+        P6 ────── P5                     ─────────────────
+                                              2 ‖P1−P4‖
 ```
 
+It divides eye height by eye width. Dividing by the width is the important part:
+it makes the number independent of how far you are from the camera, so leaning
+in doesn't read as opening your eyes wider.
+
+Open eyes land around 0.25–0.35. A blink drops it sharply for two or three
+frames. Counting those drops gives blink rate; blink rate plus session length
+gives the risk score.
+
+### Why there's a calibration step
+
+The usual EAR blink threshold is 0.21, which is a population average. Eye shape
+varies enough that a fixed threshold misbehaves at both ends — someone whose
+eyes rest at 0.24 gets phantom blinks, someone resting at 0.38 has real partial
+blinks missed entirely.
+
+Calibration samples six seconds of open-eye video, takes the **median** EAR
+(median, so an accidental blink during calibration doesn't drag the baseline
+down), and sets that user's threshold to 78% of it. It's the difference between
+"below 0.21" and "22% below *your* normal".
+
+### Limitations
+
+Worth being straight about these:
+
+- **Not a medical device.** It measures blink frequency, which is one
+  contributing factor among many. It cannot diagnose dry eye disease, and it
+  does not replace an optometrist.
+- **EAR is a proxy.** It measures eyelid geometry, not tear film. A slow
+  incomplete blink and a squint look similar to it.
+- **Needs reasonable light and a roughly frontal face.** Steep angles, heavy
+  glare on glasses, or a face at the edge of frame will drop tracking.
+- **Blink rate is a rolling 60-second window**, so it reads low for the first
+  minute of a session and then settles.
+- Screen time counts while the scanner is running, not total device use.
+
 ---
 
-## 🚀 Getting Started
+## Running it
 
-### 1️⃣ Running the React Frontend (Standalone AI Simulation / API Client)
-The frontend is built with Vite, React 19, and Tailwind CSS. It features a fully interactive AI Vision mode that works instantly in your browser.
+### Frontend (this is the main app)
 
 ```bash
-# Install dependencies
 npm install
-
-# Start development server
-npm run dev
-
-# Build for production
-npm run build
+npm run dev          # http://localhost:5173
 ```
 
-### 2️⃣ Running the Python Backend (Optional Live OpenCV Server)
-If you wish to run the local Python Flask server for raw OpenCV video feeds:
+Needs Node 20+. On first run it downloads the FaceLandmarker model (~3.6 MB)
+and the MediaPipe WASM runtime from a CDN, so the first start needs a network
+connection. After that it's cached by the browser.
+
+The app asks for camera permission when you press **Start Scanner**.
+
+### Backend (optional)
+
+The Flask server does the same detection server-side with OpenCV, streaming an
+annotated MJPEG feed. The app works fully without it — it exists as an
+alternative pipeline, selectable from the mode toggle.
 
 ```bash
 cd backend
-
-# Create virtual environment
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install requirements
+venv\Scripts\activate        # Windows
+# source venv/bin/activate   # macOS / Linux
 pip install -r requirements.txt
-
-# Run Flask server
-python app.py
+python app.py                # http://localhost:5000
 ```
-The server will start on `http://localhost:5000`.
+
+It downloads the same model on first run.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/video_feed` | MJPEG stream with eye contours and EAR drawn on |
+| `GET /api/status` | Current EAR, blink count, blink rate, risk level |
+| `GET /api/health` | Liveness check |
+| `POST /api/reset` | Clear session counters |
+| `GET /api/export_csv` | Session log as CSV |
+
+### Tests
+
+```bash
+npm test             # unit + parity
+npm run test:watch
+npm run typecheck
+```
+
+The parity suite runs the TypeScript scoring and `backend/models/ear_calc.py`
+over the same 800-input grid and asserts they agree — the logic exists in both
+places, and a user switching modes should not see different numbers. It skips
+automatically if Python isn't on PATH.
 
 ---
 
-## 🔬 Mathematical Formulation: Eye Aspect Ratio (EAR)
+## Layout
 
-The Eye Aspect Ratio is calculated using the Euclidean distances between 6 facial landmarks per eye:
+```
+src/
+  lib/ear.ts              EAR, risk scoring, health score. Pure functions.
+  lib/ear.test.ts         Unit tests, including scale invariance and boundaries
+  lib/parity.test.ts      Asserts the TS and Python agree
+  hooks/useEyeTracking.ts MediaPipe loop, blink counting, calibration, overlay
+  App.tsx                 UI
 
-$$\text{EAR} = \frac{||P_2 - P_6|| + ||P_3 - P_5||}{2 \cdot ||P_1 - P_4||}$$
+backend/
+  app.py                  Flask API and MJPEG streaming
+  utils/detector.py       FaceLandmarker wrapper
+  models/ear_calc.py      Same maths as lib/ear.ts, in Python
+```
 
-When the user blinks, the EAR drops rapidly toward zero. A threshold of `0.21` is used to detect complete eye closures.
+### Notes on a couple of decisions
+
+**Detection runs per animation frame, but React state updates at 5 Hz.**
+Re-rendering the tree 60 times a second to move a number is wasteful, so the
+loop accumulates into refs and publishes on an interval.
+
+**The GPU delegate falls back to CPU on a timeout.** On some machines WebGL
+reports available but the delegate never initialises and never rejects either,
+which left the UI on a loading spinner indefinitely. It now races
+initialisation against 8 seconds and retries on CPU.
+
+**The scoring is duplicated in Python and TypeScript** rather than shared. The
+parity test is what keeps them honest.
 
 ---
 
-## 📜 License & Disclaimer
-This project is developed for educational and preliminary screening purposes. It is not a replacement for professional medical diagnosis or ophthalmology consultation.
+## Deploying
+
+The frontend is a static bundle — `npm run build` emits a single `dist/index.html`
+with everything inlined. Config for both hosts is in the repo:
+
+```bash
+npx vercel --prod          # vercel.json
+# or connect the repo at netlify.com — netlify.toml is already set up
+```
+
+**Camera access requires HTTPS.** Both hosts provide it automatically. Opening
+the built file over `file://` will not work, and neither will a plain-HTTP host.
+
+The Flask backend is not part of the static deploy. The app runs fully without
+it.
+
+---
+
+## Disclaimer
+
+This is a personal project for monitoring screen habits. It is **not a medical
+device** and produces no diagnosis. Terms like "risk level" refer to blink
+behaviour during a session, nothing more. If your eyes hurt, see an optometrist.

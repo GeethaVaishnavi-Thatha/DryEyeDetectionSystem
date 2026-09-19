@@ -26,7 +26,6 @@ import {
   Watch, 
   Code, 
   Globe, 
-  Mail, 
   ChevronRight, 
   HeartPulse, 
   Video, 
@@ -1062,13 +1061,15 @@ export default function App() {
                         <span className={`text-base font-bold ${riskLevel === 'High Risk' ? 'text-red-400' : riskLevel === 'Moderate Risk' ? 'text-yellow-400' : 'text-emerald-400'}`}>
                           {riskLevel}
                         </span>
-                        <span className="text-xs text-slate-400 font-mono">Multi-Factor AI</span>
+                        <span className="text-xs text-slate-400 font-mono">
+                          {hasMeasurements ? `score ${riskAssessment.score}/7` : 'no data'}
+                        </span>
                       </div>
                       {/* Risk Progress Bar */}
                       <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
                         <div 
                           className={`h-full transition-all duration-500 ${riskLevel === 'High Risk' ? 'bg-red-500' : riskLevel === 'Moderate Risk' ? 'bg-yellow-500' : 'bg-emerald-500'}`}
-                          style={{ width: riskLevel === 'High Risk' ? '90%' : riskLevel === 'Moderate Risk' ? '50%' : '15%' }}
+                          style={{ width: `${hasMeasurements ? Math.round((riskAssessment.score / 7) * 100) : 0}%` }}
                         />
                       </div>
                     </div>
@@ -1681,11 +1682,17 @@ export default function App() {
           <div>
             <h4 className="text-sm font-bold text-white uppercase tracking-wider mb-4 border-l-2 border-cyan-500 pl-3">Contact & Support</h4>
             <p className="text-xs text-slate-400 mb-4 leading-relaxed">
-              Have questions regarding our AI diagnostic algorithms or commercial healthcare integration?
+              Questions about how the blink detection works, or found a bug? The
+              source and issue tracker are on GitHub.
             </p>
-            <a href="mailto:support@smartdryeye.ai" className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-cyan-400 border border-slate-800 text-xs font-semibold transition-all">
-              <Mail className="w-4 h-4" />
-              <span>support@smartdryeye.ai</span>
+            <a
+              href="https://github.com/GeethaVaishnavi-Thatha/DryEyeDetectionSystem"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-cyan-400 border border-slate-800 text-xs font-semibold transition-all"
+            >
+              <Code className="w-4 h-4" />
+              <span>View on GitHub</span>
             </a>
             <div className="mt-4 text-[10px] text-slate-500">
               © {new Date().getFullYear()} Smart Dry Eye Detection System. All rights reserved.
@@ -1696,7 +1703,7 @@ export default function App() {
 
         {/* Bottom Disclaimer */}
         <div className="max-w-7xl mx-auto pt-8 border-t border-slate-800/80 text-center text-[11px] text-slate-500 leading-relaxed">
-          <strong>Medical Disclaimer:</strong> This software is designed for educational, ergonomic, and preliminary screening purposes only. It does not replace professional ophthalmology consultations, clinical tear film evaluations, or formal medical diagnoses. If you experience chronic dry eye, eye pain, or severe vision changes, please consult a certified eye care professional immediately.
+          <strong>Medical Disclaimer:</strong> This is a personal project for monitoring screen habits, not a medical device. It measures how often you blink during a session, which is one contributing factor among many — it cannot evaluate your tear film and produces no diagnosis. "Risk level" refers to blink behaviour only. If you have persistent dry eye, pain, or changes in vision, see a qualified eye care professional.
         </div>
       </footer>
 
